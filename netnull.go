@@ -169,18 +169,7 @@ func acceptHandler(conn net.Conn) {
 	wg.Wait()
 }
 
-func main() {
-	flag.Parse()
-
-	if !*sendFlag && !*receiveFlag {
-		log.Fatalf("You must use at least one of -send and -receive!")
-	}
-
-	writeData = make([]byte, (*blockSizeKilobytes)*1024)
-
-	if *listenAddr == "*" {
-		*listenAddr = "0.0.0.0" // XXX Assumes IPv4.
-	}
+func listen() {
 
 	laddr := fmt.Sprintf("%s:%v", *listenAddr, *listenPort)
 	iprintf("Listening on %s\n", laddr)
@@ -199,4 +188,20 @@ func main() {
 		iprintf("Accepted connection from %s\n", conn.RemoteAddr())
 		go acceptHandler(conn)
 	}
+}
+
+func main() {
+	flag.Parse()
+
+	if !*sendFlag && !*receiveFlag {
+		log.Fatalf("You must use at least one of -send and -receive!")
+	}
+
+	writeData = make([]byte, (*blockSizeKilobytes)*1024)
+
+	if *listenAddr == "*" {
+		*listenAddr = "0.0.0.0" // XXX Assumes IPv4.
+	}
+
+	listen() // Never returns.
 }
