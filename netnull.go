@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	humanize "github.com/dustin/go-humanize"
 )
@@ -57,16 +58,15 @@ func readLoop(conn net.Conn, wg *sync.WaitGroup) {
 	cinfo := fmt.Sprintf("[%s->%s] Input:", conn.RemoteAddr(), conn.LocalAddr())
 	var received uint64
 
-	defer func() {
-		iprintf("%s Received %s total", cinfo, maybeHumanBytes(received))
-		wg.Done()
-	}()
+	defer wg.Done()
 
 	data := make([]byte, (*blockSizeKilobytes)*1024)
 
 	input := bufio.NewReader(conn)
 
+	start := time.Now()
 	for {
+
 		n, err := input.Read(data)
 
 		if err == io.EOF {
@@ -81,6 +81,13 @@ func readLoop(conn net.Conn, wg *sync.WaitGroup) {
 		received += uint64(n)
 		vprintf("%s Received %d bytes\n", cinfo, n)
 	}
+
+	elapsed := time.Since(start)
+	// Convert: bytes -> MB (divide by 10^6), s -> ns (multiply by 10^9)
+	// => multiply by 10^3.
+	rate := 1000.0 * float64(received) / float64(elapsed)
+
+	iprintf("%s Received %s in %s (%.3f MBps)", cinfo, maybeHumanBytes(received), elapsed, rate)
 }
 
 func writeLoop(conn net.Conn, wg *sync.WaitGroup) {
@@ -88,13 +95,11 @@ func writeLoop(conn net.Conn, wg *sync.WaitGroup) {
 	cinfo := fmt.Sprintf("[%s->%s] Output:", conn.RemoteAddr(), conn.LocalAddr())
 	var sent uint64
 
-	defer func() {
-		iprintf("%s Sent %s total", cinfo, maybeHumanBytes(sent))
-		wg.Done()
-	}()
+	defer wg.Done()
 
 	output := bufio.NewWriter(conn)
 
+	start := time.Now()
 WRITE:
 	for {
 		n, err := output.Write(writeData)
@@ -119,6 +124,14 @@ WRITE:
 		sent += uint64(n)
 		vprintf("%s Wrote %d bytes\n", cinfo, n)
 	}
+
+	elapsed := time.Since(start)
+	// Convert: bytes -> MB (divide by 10^6), s -> ns (multiply by 10^9)
+	// => multiply by 10^3.
+	rate := 1000.0 * float64(sent) / float64(elapsed)
+
+	iprintf("%s Sent %s in %s (%.3f MBps)", cinfo, maybeHumanBytes(sent), elapsed, rate)
+
 }
 
 func acceptHandler(conn net.Conn) {
