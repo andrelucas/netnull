@@ -13,14 +13,17 @@ import (
 	humanize "github.com/dustin/go-humanize"
 )
 
-var listenPort = flag.Uint("port", 2021, "server listen port")
-var listenAddr = flag.String("addr", "*", "server listen address")
-var verbose = flag.Bool("verbose", false, "print additional diagnostic information")
 var blockSizeKilobytes = flag.Uint("blocksize", 256, "send blocksize in Kilobytes")
-var sendFlag = flag.Bool("send", false, "the server should send data to clients")
-var receiveFlag = flag.Bool("receive", false, "the server should receive data from clients")
+var bytesDisplayFlag = flag.Bool("bytes", false,
+	"display results in bytes (normally shown in 'humanized' form)")
 var halfClose = flag.Bool("halfclose", false,
 	"the unused direction of a send- or receive-only connection should be closed")
+var listenAddr = flag.String("addr", "*", "server listen address")
+var listenPort = flag.Uint("port", 2021, "server listen port")
+var receiveFlag = flag.Bool("receive", false,
+	"the server should receive data from clients")
+var sendFlag = flag.Bool("send", false, "the server should send data to clients")
+var verbose = flag.Bool("verbose", false, "print additional diagnostic information")
 
 func fixformat(format string) string {
 	if !(format[len(format)-1] == '\n') {
