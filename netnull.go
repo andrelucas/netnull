@@ -25,7 +25,7 @@ var receiveFlag = flag.Bool("receive", false,
 var sendFlag = flag.Bool("send", false, "the server should send data to clients")
 var verbose = flag.Bool("verbose", false, "print additional diagnostic information")
 
-func fixformat(format string) string {
+func alwaysNewline(format string) string {
 	if !(format[len(format)-1] == '\n') {
 		format += "\n"
 	}
@@ -33,23 +33,102 @@ func fixformat(format string) string {
 }
 
 func iprintf(format string, args ...interface{}) {
-	fmt.Printf(fixformat(format), args...)
+	fmt.Printf(alwaysNewline(format), args...)
 }
 
 func vprintf(format string, args ...interface{}) {
-	format = fixformat(format)
 	if *verbose {
-		fmt.Printf(format, args...)
+		fmt.Printf(alwaysNewline(format), args...)
 	}
 }
 
 var writeData []byte
 
+func maybeHumanBytes(b uint64) string {
+	if !*bytesDisplayFlag {
+		return humanize.Bytes(b)
+	} else {
+		return fmt.Sprintf("%v bytes", b)
+	}
+}
+
+func readLoop(conn net.Conn, wg *sync.WaitGroup) {
+
+	cinfo := fmt.Sprintf("[%s->%s] Input:", conn.RemoteAddr(), conn.LocalAddr())
+	var received uint64
+
+	defer func() {
+		iprintf("%s Received %s total", cinfo, maybeHumanBytes(received))
+		wg.Done()
+	}()
+
+	data := make([]byte, (*blockSizeKilobytes)*1024)
+
+	input := bufio.NewReader(conn)
+
+	for {
+		n, err := input.Read(data)
+
+		if err == io.EOF {
+			// This is ok.
+			vprintf("%s Received EOF\n", cinfo)
+			break
+		} else if err != nil {
+			fmt.Fprintf(os.Stderr, "%s error: %s", cinfo, err)
+			break
+		}
+
+		received += uint64(n)
+		vprintf("%s Received %d bytes\n", cinfo, n)
+	}
+}
+
+func writeLoop(conn net.Conn, wg *sync.WaitGroup) {
+
+	cinfo := fmt.Sprintf("[%s->%s] Output:", conn.RemoteAddr(), conn.LocalAddr())
+	var sent uint64
+
+	defer func() {
+		iprintf("%s Sent %s total", cinfo, maybeHumanBytes(sent))
+		wg.Done()
+	}()
+
+	output := bufio.NewWriter(conn)
+
+WRITE:
+	for {
+		n, err := output.Write(writeData)
+		if err == io.EOF {
+			// This is ok, but unlikely - 'broken pipe' is more likely.
+			vprintf("%s Received EOF\n", cinfo)
+			break
+		} else if err != nil {
+			// 'Broken pipe' is the most likely error here. Handle it specially.
+			switch err := err.(type) {
+			case *net.OpError:
+				// Ugly string match.
+				if fmt.Sprint(err.Err) == "write: broken pipe" {
+					vprintf("%s Remote closed the connection", cinfo)
+					break WRITE
+				}
+			}
+			// Ok, this really is an unexpected error.
+			fmt.Fprintf(os.Stderr, "%s error: %s\n", cinfo, err)
+			break
+		}
+		sent += uint64(n)
+		vprintf("%s Wrote %d bytes\n", cinfo, n)
+	}
+}
+
 func acceptHandler(conn net.Conn) {
-	defer conn.Close()
 
 	cinfo := fmt.Sprintf("%s->%s", conn.RemoteAddr(), conn.LocalAddr())
-	var sent, received uint64
+	defer func() {
+		iprintf("[%s] Closing connection", cinfo)
+		conn.Close()
+	}()
+
 	var wg sync.WaitGroup
 
 	// Reader side.
@@ -67,26 +146,7 @@ func acceptHandler(conn net.Conn) {
 		}
 	} else {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			data := make([]byte, (*blockSizeKilobytes)*1024)
-			input := bufio.NewReader(conn)
-			for {
-				n, err := input.Read(data)
-
-				if err == io.EOF {
-					// This is ok.
-					vprintf("[%s] Input: Received EOF\n", cinfo)
-					break
-				} else if err != nil {
-					fmt.Fprintf(os.Stderr, "[%s] Input: error: %s", cinfo, err)
-					break
-				}
-
-				received += uint64(n)
-				vprintf("[%s] Input: Received %d bytes\n", cinfo, n)
-			}
-		}()
+		go readLoop(conn, &wg)
 	}
 
 	// Writer side.
@@ -103,29 +163,10 @@ func acceptHandler(conn net.Conn) {
 		}
 	} else {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			output := bufio.NewWriter(conn)
-			for {
-				n, err := output.Write(writeData)
-				if err == io.EOF {
-					// This is ok.
-					vprintf("[%s] Output: Received EOF\n", cinfo)
-					break
-				} else if err != nil {
-					// 'Broken pipe' is the most likely error here.
-					fmt.Fprintf(os.Stderr, "[%s] Output: error: %s\n", cinfo, err)
-					break
-				}
-				sent += uint64(n)
-				vprintf("[%s] Output: Wrote %d bytes\n", cinfo, n)
-			}
-		}()
+		go writeLoop(conn, &wg)
 	}
 
 	wg.Wait()
-	iprintf("[%s] Closing connection: sent %s, received %s\n",
-		cinfo, humanize.Bytes(sent), humanize.Bytes(received))
 }
 
 func main() {
