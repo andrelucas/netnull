@@ -5,9 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"os"
+	"path"
 	"sync"
 	"time"
 
@@ -25,6 +27,16 @@ var receiveFlag = flag.Bool("receive", false,
 	"the server should receive data from clients")
 var sendFlag = flag.Bool("send", false, "the server should send data to clients")
 var verbose = flag.Bool("verbose", false, "print additional diagnostic information")
+var writeFileFlag = flag.Bool("write-file", false,
+	"write received data to the filesystem (dangerous!)")
+var writeFileChunkMB = flag.Uint64("write-file-chunk-mb", 500,
+	"maximum size of written file in MB - larger input will wrap around but will not fail.\n"+
+		"\tNote that this will mean a file of this size per connection, so it will be trivial\n"+
+		"\tto fill your target filesystem!")
+var writeFilePath = flag.String("write-file-prefix", "/var/tmp/netnull-tmp",
+	"prefix of written files - will have a random string appended")
+var writeFileNoDeleteFlag = flag.Bool("write-file-no-delete", false,
+	"do not delete written files (dangerous!)")
 
 func alwaysNewline(format string) string {
 	if !(format[len(format)-1] == '\n') {
@@ -43,7 +55,7 @@ func vprintf(format string, args ...interface{}) {
 	}
 }
 
-var writeData []byte
+var netOutputData []byte
 
 func maybeHumanBytes(b uint64) string {
 	if !*bytesDisplayFlag {
@@ -53,10 +65,19 @@ func maybeHumanBytes(b uint64) string {
 	}
 }
 
+func writeToChunkFile(file io.Writer, data *[]byte, size uint) {
+
+}
+
 func readLoop(conn net.Conn, wg *sync.WaitGroup) {
 
 	cinfo := fmt.Sprintf("[%s->%s] Input:", conn.RemoteAddr(), conn.LocalAddr())
 	var received uint64
+	var writeFile *os.File
+	var writeFileName string
+	var writeFileOffset uint64
+	var writeWrapCount uint
+	var writeFileSize uint64 = *writeFileChunkMB * uint64(1000*1000)
 
 	defer wg.Done()
 
@@ -65,6 +86,31 @@ func readLoop(conn net.Conn, wg *sync.WaitGroup) {
 	input := bufio.NewReader(conn)
 
 	start := time.Now()
+
+	// Include the file creation in the timing - it might be relevant.
+	if *writeFileFlag {
+		vprintf("%s Attempting to open file write for prefix '%s'",
+			cinfo, *writeFilePath)
+		wfdir, wfprefix := path.Split(*writeFilePath)
+
+		var err error
+
+		writeFile, err = ioutil.TempFile(wfdir, wfprefix)
+		if err != nil {
+			fmt.Fprint(os.Stderr, "%s Abort - tempfile create error: %s", cinfo, err)
+			return
+		}
+		writeFileName = writeFile.Name()
+		defer func() {
+			if writeFile != nil {
+				vprintf("%s Removing write file '%s'", cinfo, writeFileName)
+				os.Remove(writeFileName) // Ignore errors.
+			}
+		}()
+		vprintf("%s will write to '%s' limiting its size to %v MB",
+			cinfo, writeFileName, *writeFileChunkMB)
+	}
+
 	for {
 
 		n, err := input.Read(data)
@@ -78,8 +124,39 @@ func readLoop(conn net.Conn, wg *sync.WaitGroup) {
 			break
 		}
 
+		if *writeFileFlag {
+			if writeFileOffset+uint64(n) > writeFileSize {
+				writeFileOffset = uint64(0)
+				writeWrapCount++
+			}
+			vprintf("%s Attempt write %v bytes at offset %v", cinfo, n, writeFileOffset)
+			// Re-slice to the correct size.
+			writeData := data[:n]
+			wn, err := writeFile.WriteAt(writeData, int64(writeFileOffset))
+			if err != nil {
+				fmt.Fprintf(os.Stderr,
+					"%s Abort - error writing to file '%s' at offset %v: %s\n",
+					cinfo, writeFileName, writeFileOffset, err)
+				return
+			}
+			if wn != n {
+				// Short write.
+				fmt.Fprintf(os.Stderr,
+					"%s Abort - short write to file '%s' at offset %v (expected %v, got %v)\n",
+					cinfo, writeFileName, writeFileOffset, wn, n)
+				return
+			}
+			writeFileOffset += uint64(n)
+		}
+
 		received += uint64(n)
 		vprintf("%s Received %d bytes\n", cinfo, n)
+	}
+
+	// Again, include the Close in the timing as it might matter.
+	if *writeFileFlag && writeFile != nil {
+		vprintf("%s Closing write file, wrap count %d", cinfo, writeWrapCount)
+		writeFile.Close() // Ignore errors.
 	}
 
 	elapsed := time.Since(start)
@@ -102,7 +179,7 @@ func writeLoop(conn net.Conn, wg *sync.WaitGroup) {
 	start := time.Now()
 WRITE:
 	for {
-		n, err := output.Write(writeData)
+		n, err := output.Write(netOutputData)
 		if err == io.EOF {
 			// This is ok, but unlikely - 'broken pipe' is more likely.
 			vprintf("%s Received EOF\n", cinfo)
@@ -210,7 +287,7 @@ func main() {
 		log.Fatalf("You must use at least one of -send and -receive!")
 	}
 
-	writeData = make([]byte, (*blockSizeKilobytes)*1024)
+	netOutputData = make([]byte, (*blockSizeKilobytes)*1024)
 
 	if *listenAddr == "*" {
 		*listenAddr = "0.0.0.0" // XXX Assumes IPv4.
