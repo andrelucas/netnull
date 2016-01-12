@@ -1,3 +1,9 @@
+// Source and sink server for testing.
+//
+// Optionally can write files, opts for speed rather than caring
+// about space, so this can be risky if used on systems where
+// filling the disk is bad.
+
 package main
 
 import (
