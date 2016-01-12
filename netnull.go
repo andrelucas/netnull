@@ -71,10 +71,6 @@ func maybeHumanBytes(b uint64) string {
 	}
 }
 
-func writeToChunkFile(file io.Writer, data *[]byte, size uint) {
-
-}
-
 func readLoop(conn net.Conn, wg *sync.WaitGroup) {
 
 	cinfo := fmt.Sprintf("[%s->%s] Input:", conn.RemoteAddr(), conn.LocalAddr())
